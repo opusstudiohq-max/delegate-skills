@@ -59,16 +59,21 @@ export function runDelegateSetup(h) {
       '#!/bin/sh\ncase "$1" in --version) echo "9.9.9"; exit 0;; esac\nexit 0\n',
     );
     chmodSync(join(cwdProbe, "codex"), 0o755);
-    const cwdDiscover = spawnSync(process.execPath, [join(setupDir, "discover.mjs")], {
-      encoding: "utf8",
-      cwd: cwdProbe,
-      env: { ...process.env, PATH: delimiter },
-    });
-    const cwdReport = cwdDiscover.status === 0 ? JSON.parse(cwdDiscover.stdout) : null;
-    h.check(
-      "discover honours an empty PATH component as the current directory",
-      cwdReport?.discovered.find((d) => d.key === "codex")?.version === "9.9.9",
-    );
+    for (const [label, pathValue] of [
+      ["an empty PATH component", delimiter],
+      ["a set-but-empty PATH", ""],
+    ]) {
+      const cwdDiscover = spawnSync(process.execPath, [join(setupDir, "discover.mjs")], {
+        encoding: "utf8",
+        cwd: cwdProbe,
+        env: { ...process.env, PATH: pathValue },
+      });
+      const cwdReport = cwdDiscover.status === 0 ? JSON.parse(cwdDiscover.stdout) : null;
+      h.check(
+        `discover honours ${label} as the current directory`,
+        cwdReport?.discovered.find((d) => d.key === "codex")?.version === "9.9.9",
+      );
+    }
   }
 
   if (h.WIN) {
