@@ -83,9 +83,9 @@ export function runDelegateSetup(h) {
     });
     const commandCode = JSON.parse(withoutConfiguredCommandCode.stdout);
     h.check(
-      "discover does not mistake Windows cmd.exe for Command Code",
-      commandCode.missing.some(({ key }) => key === "commandcode") &&
-        !commandCode.discovered.some(({ key }) => key === "commandcode"),
+      "discover uses the Windows cmdc shim instead of cmd.exe",
+      commandCode.discovered.some(({ key, path }) =>
+        key === "commandcode" && /cmdc\.cmd$/i.test(path)),
     );
     const comspec = h.baseEnv.ComSpec || h.baseEnv.COMSPEC;
     for (const [name, commandCodeBin] of [
@@ -103,27 +103,17 @@ export function runDelegateSetup(h) {
           !rejectedReport.discovered.some(({ key }) => key === "commandcode"),
       );
     }
-    const withConfiguredCommandCode = spawnSync(process.execPath, [join(setupDir, "discover.mjs")], {
-      encoding: "utf8",
-      env: h.baseEnv,
-    });
-    const configuredCommandCode = JSON.parse(withConfiguredCommandCode.stdout);
-    h.check(
-      "discover probes the configured Command Code executable on Windows",
-      configuredCommandCode.discovered.some(({ key, path }) =>
-        key === "commandcode" && path === h.baseEnv.COMMANDCODE_BIN),
-    );
     const commandCodeShim = join(h.scratch, "commandcode.cmd");
-    writeFileSync(commandCodeShim, "@exit /b 0\r\n");
+    writeFileSync(commandCodeShim, "@echo override-commandcode\r\n");
     const withCommandCodeShim = spawnSync(process.execPath, [join(setupDir, "discover.mjs")], {
       encoding: "utf8",
       env: { ...h.baseEnv, COMMANDCODE_BIN: commandCodeShim },
     });
     const shimmedCommandCode = JSON.parse(withCommandCodeShim.stdout);
     h.check(
-      "discover rejects a Command Code .cmd shim that the relay cannot launch",
-      shimmedCommandCode.missing.some(({ key }) => key === "commandcode") &&
-        !shimmedCommandCode.discovered.some(({ key }) => key === "commandcode"),
+      "discover probes a configured Command Code .cmd shim",
+      shimmedCommandCode.discovered.some(({ key, path, version }) =>
+        key === "commandcode" && path === commandCodeShim && version === "override-commandcode"),
     );
   }
 
