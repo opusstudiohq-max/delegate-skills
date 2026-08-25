@@ -46,8 +46,14 @@ if (h.WIN) {
       !existsSync(join(rejectedOutDir, "result.json")));
   }
   const { run, captured } = dispatch(h, "windows-cmdc-shim", []);
+  const windowsLaunchWorked = run.status === 0 && captured.brief.includes("smoke brief");
+  if (!windowsLaunchWorked) {
+    console.error(`commandcode windows stdout:\n${run.stdout}`);
+    console.error(`commandcode windows stderr:\n${run.stderr}`);
+    console.error(`commandcode windows capture: ${JSON.stringify(captured)}`);
+  }
   h.check("commandcode windows launch: cmdc.cmd receives the brief through stdin",
-    run.status === 0 && captured.brief.includes("smoke brief"));
+    windowsLaunchWorked);
   return;
 }
 {
