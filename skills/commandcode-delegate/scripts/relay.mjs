@@ -149,7 +149,7 @@ const BIN = CONFIGURED_BIN && /[\\/]/.test(CONFIGURED_BIN)
   ? resolve(CONFIGURED_BIN)
   : CONFIGURED_BIN || DEFAULT_BIN;
 const WIN_SHELL = process.platform === "win32" && (!CONFIGURED_BIN || /\.(?:cmd|bat)$/i.test(BIN));
-const LAUNCH_BIN = WIN_SHELL ? `"${BIN}"` : BIN;
+const LAUNCH_BIN = WIN_SHELL && /[\\/]/.test(BIN) ? `"${BIN}"` : BIN;
 
 // Command Code's documented headless exit codes, for a summary hint that points at the
 // actual cause instead of a bare number.
