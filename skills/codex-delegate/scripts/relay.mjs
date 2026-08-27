@@ -56,8 +56,9 @@
  *
  * Result: written to <out-dir>/result.json and summarized on stdout —
  *   status, exitCode, signal, codexVersion, threadId (for a later resume), finalMessage
- *   (Codex's own report), touchedFiles (git porcelain, null if git can't report), and the paths to
- *   events.jsonl and final.txt.
+ *   (Codex's own report), touchedFiles (git porcelain, null if git can't report), stderrTail on a
+ *   run that did not succeed, and the paths to events.jsonl, final.txt and stderr.txt. stderr.txt
+ *   holds the complete stderr stream; stderrTail is only its last 20 lines.
  *
  * Exit codes: a pre-run usage error (bad/missing args, empty brief) exits 2
  * before any run and writes no result file; a missing `codex` binary exits 127;
@@ -409,10 +410,12 @@ function prepareRunDir(opts, brief) {
     eventsPath: join(outDir, "events.jsonl"),
     finalPath: join(outDir, "final.txt"),
     briefPath: join(outDir, "brief.txt"),
+    stderrPath: join(outDir, "stderr.txt"),
     resultPath: join(outDir, "result.json"),
   };
   writeFileSync(run.briefPath, brief, "utf8");
   writeFileSync(run.eventsPath, "", "utf8");
+  writeFileSync(run.stderrPath, "", "utf8");
   return run;
 }
 
@@ -440,6 +443,7 @@ function makeResultWriter(opts, version, run) {
       briefPath: run.briefPath,
       eventsPath: run.eventsPath,
       finalPath: existsSync(run.finalPath) ? run.finalPath : null,
+      stderrPath: run.stderrPath,
       ...extra,
     };
     // Publish atomically so a polling orchestrator never reads a half-written file
@@ -458,9 +462,27 @@ function reportUnavailable(writeResult, resultPath) {
   process.exit(127);
 }
 
+// `codex exec` writes its whole transcript to stderr — the banner, every tool call, and the
+// full output of every command it runs — so on a failing run the line that explains the
+// failure is routinely hundreds of lines back and a bounded in-memory tail drops it. Persist
+// all of it beside the other run artifacts, the way claude-delegate already does, and let
+// result.json carry the tail as a summary that points at the complete file.
+function stderrTail(stderrPath) {
+  try {
+    return readFileSync(stderrPath, "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter((line) => line.trim())
+      .slice(-20);
+  } catch {
+    return [];
+  }
+}
+
 function reportVersionFailure(opts, writeResult, run, error, probeTimeoutMs) {
   const timedOut = error?.code === "ETIMEDOUT";
   const stderr = String(error?.stderr || "").trim();
+  if (stderr) writeFileSync(run.stderrPath, `${stderr}\n`, "utf8");
   const message = timedOut
     ? `codex --version preflight timed out after ${probeTimeoutMs}ms; Codex was not dispatched`
     : `codex --version preflight failed${Number.isInteger(error?.status) ? ` with exit ${error.status}` : ""}; Codex was not dispatched`;
@@ -471,7 +493,7 @@ function reportVersionFailure(opts, writeResult, run, error, probeTimeoutMs) {
     threadId: null,
     finalMessage: "",
     touchedFiles: gitTouchedFiles(opts.cd),
-    stderrTail: stderr ? stderr.split("\n").slice(-20) : [],
+    stderrTail: stderrTail(run.stderrPath),
     error: message,
   });
   printSummary(result, run.resultPath);
@@ -489,12 +511,10 @@ function dispatchToCodex(opts, brief, run, writeResult, env) {
 
   let threadId = null;
   let stdoutBuf = "";
-  const stderrTail = [];
 
   // Decode across chunk boundaries: a multibyte UTF-8 character split between
   // two data events would otherwise decode as U+FFFD and corrupt the report.
   const stdoutDecoder = new StringDecoder("utf8");
-  const stderrDecoder = new StringDecoder("utf8");
 
   child.stdout.on("data", (chunk) => {
     stdoutBuf += stdoutDecoder.write(chunk);
@@ -510,11 +530,7 @@ function dispatchToCodex(opts, brief, run, writeResult, env) {
 
   child.stderr.on("data", (chunk) => {
     process.stderr.write(chunk); // surface Codex progress live for the orchestrator
-    const text = stderrDecoder.write(chunk);
-    for (const line of text.split("\n")) {
-      if (line.trim()) stderrTail.push(line.trimEnd());
-    }
-    while (stderrTail.length > 20) stderrTail.shift();
+    appendFileSync(run.stderrPath, chunk);
   });
 
   let settled = false;
@@ -558,7 +574,7 @@ function dispatchToCodex(opts, brief, run, writeResult, env) {
         threadId,
         finalMessage,
         touchedFiles: gitTouchedFiles(opts.cd),
-        stderrTail: stderrTail.slice(-20),
+        stderrTail: stderrTail(run.stderrPath),
         error: `the relay was killed by ${sig}; codex was terminated with it — inspect the working tree before re-dispatching`,
       };
       const result = writeResult(abortedFields);
@@ -606,7 +622,7 @@ function dispatchToCodex(opts, brief, run, writeResult, env) {
       threadId,
       finalMessage,
       touchedFiles: gitTouchedFiles(opts.cd),
-      ...(succeeded ? {} : { stderrTail: stderrTail.slice(-20) }),
+      ...(succeeded ? {} : { stderrTail: stderrTail(run.stderrPath) }),
       ...(watchdogFired ? { error: `codex did not finish within --timeout ${opts.timeout}; killed by the relay watchdog` } : {}),
     });
     printSummary(result, run.resultPath);

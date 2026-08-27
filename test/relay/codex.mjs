@@ -104,4 +104,24 @@ const emptyEffortRun = spawnSync(process.execPath,
   [h.relayPath("codex"), "--brief", h.briefPath, "--effort", ""],
   { env: h.baseEnv, encoding: "utf8" });
 h.check("codex effort: an empty value is rejected", emptyEffortRun.status === 2);
+// ---- codex stderr: the full log survives a transcript longer than the tail ----
+const floodOutDir = join(h.scratch, "out-stderr-flood-codex");
+const floodRun = spawnSync(process.execPath,
+  [h.relayPath("codex"), "--brief", h.briefPath, "--cd", h.freshRepo("work-stderr-flood-codex"), "--out-dir", floodOutDir],
+  { env: { ...h.baseEnv, SMOKE_MODE: "codex-stderr-flood" }, encoding: "utf8" });
+const floodResult = existsSync(join(floodOutDir, "result.json")) ? h.result(floodOutDir) : null;
+const floodTail = floodResult?.stderrTail ?? [];
+const floodLog = floodResult?.stderrPath && existsSync(floodResult.stderrPath)
+  ? readFileSync(floodResult.stderrPath, "utf8")
+  : "";
+h.check("codex stderr: the flooded run still fails with the implementer's exit",
+  floodRun.status === 1 && floodResult?.status === "failed" && floodResult.exitCode === 1);
+h.check("codex stderr: result.json points at the full log",
+  Boolean(floodResult?.stderrPath) && existsSync(floodResult.stderrPath));
+h.check("codex stderr: the full log keeps a diagnostic the tail cannot hold",
+  floodLog.includes("early marker") && !floodTail.some((line) => line.includes("early marker")));
+h.check("codex stderr: the full log drops nothing",
+  floodLog.split("\n").filter((line) => line.includes("failed to renew cache TTL")).length === 300);
+h.check("codex stderr: the tail stays bounded and ends at the failure",
+  floodTail.length === 20 && Boolean(floodTail.at(-1)?.includes("fatal: dispatch failed")));
 }
