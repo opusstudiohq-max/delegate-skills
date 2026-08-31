@@ -43,6 +43,8 @@
  *   --clean-env             Launch Codex and its version preflight with only runtime basics.
  *                           Changes inherited variables only; does not protect files or other
  *                           same-user secrets.
+ *   --ignore-user-config    Do not load Codex user config. Authentication still uses CODEX_HOME;
+ *                           useful for isolated reviews that must not start ambient MCP servers.
  *   --keep-env <name>       Keep one additional variable under --clean-env (repeatable).
  *                           Required for environment-backed auth and other stripped variables.
  *   --skip-git-repo-check   Allow running outside a git repository.
@@ -148,6 +150,7 @@ function parseArgs(argv) {
     resumeLast: false,
     session: null,
     cleanEnv: false,
+    ignoreUserConfig: false,
     keepEnv: [],
     skipGitRepoCheck: false,
     timeout: null,
@@ -177,6 +180,7 @@ function parseArgs(argv) {
       case "--resume-last": opts.resumeLast = true; break;
       case "--session": opts.session = next(); break;
       case "--clean-env": opts.cleanEnv = true; break;
+      case "--ignore-user-config": opts.ignoreUserConfig = true; break;
       case "--keep-env": opts.keepEnv.push(next()); break;
       case "--skip-git-repo-check": opts.skipGitRepoCheck = true; break;
       case "--timeout": opts.timeout = next(); flagged.add("timeout"); break;
@@ -356,6 +360,7 @@ function timestamp() {
 
 function buildArgv(opts, finalPath) {
   const argv = ["exec"];
+  if (opts.ignoreUserConfig) argv.push("--ignore-user-config");
   const resuming = Boolean(opts.session || opts.resumeLast);
   // Codex accepts shared exec options before the resume subcommand. Reapply only
   // an explicitly selected sandbox; otherwise leave the active Codex config alone.
@@ -438,6 +443,7 @@ function makeResultWriter(opts, version, run) {
       resumeLast: opts.resumeLast,
       session: opts.session,
       cleanEnv: opts.cleanEnv,
+      ignoreUserConfig: opts.ignoreUserConfig,
       keepEnv: opts.keepEnv,
       codexVersion: version,
       startedAt: run.startedAt,
