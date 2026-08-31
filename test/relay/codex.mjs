@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export async function runCodex(h) {
@@ -124,4 +124,38 @@ h.check("codex stderr: the full log drops nothing",
   floodLog.split("\n").filter((line) => line.includes("failed to renew cache TTL")).length === 300);
 h.check("codex stderr: the tail stays bounded and ends at the failure",
   floodTail.length === 20 && Boolean(floodTail.at(-1)?.includes("fatal: dispatch failed")));
+
+// PR #102: a small heap must still publish the failure after a large stderr stream.
+const largeOutDir = join(h.scratch, "out-stderr-large-codex");
+const largeRun = spawnSync(process.execPath,
+  ["--max-old-space-size=32", h.relayPath("codex"), "--brief", h.briefPath,
+    "--cd", h.freshRepo("work-stderr-large-codex"), "--out-dir", largeOutDir],
+  { env: { ...h.baseEnv, SMOKE_MODE: "codex-stderr-large" }, stdio: "ignore", timeout: 30_000 });
+const largeResult = existsSync(join(largeOutDir, "result.json")) ? h.result(largeOutDir) : null;
+h.check("codex stderr: large logs preserve the failure result under a small heap",
+  largeRun.status === 7 && largeResult?.status === "failed" && largeResult.exitCode === 7);
+h.check("codex stderr: the tail preserves logical lines, UTF-8, and an unterminated final line",
+  JSON.stringify(largeResult?.stderrTail) === JSON.stringify([
+    ...Array(18).fill("x"), "fatal: café انتهى 🐎", "last diagnostic without newline",
+  ]));
+h.check("codex stderr: the complete large stream remains on disk",
+  existsSync(join(largeOutDir, "stderr.txt")) &&
+  statSync(join(largeOutDir, "stderr.txt")).size === 4 * 1024 * 1024 +
+    Buffer.byteLength("\r\n  \r\nfatal: café انتهى 🐎\r\nlast diagnostic without newline"));
+
+for (const [mode, expectedTail] of [
+  ["codex-stderr-long-line", ["[truncated; read stderrPath] " + "🐎".repeat(16383) + "fin"]],
+  ["codex-stderr-window-boundary", ["first complete diagnostic", "last diagnostic"]],
+  ["codex-version-fail", ["fake version failure"]],
+]) {
+  const outDir = join(h.scratch, `out-${mode}`);
+  const run = spawnSync(process.execPath,
+    ["--max-old-space-size=32", h.relayPath("codex"), "--brief", h.briefPath,
+      "--cd", h.freshRepo(`work-${mode}`), "--out-dir", outDir],
+    { env: { ...h.baseEnv, SMOKE_MODE: mode }, stdio: "ignore", timeout: 30_000 });
+  const result = existsSync(join(outDir, "result.json")) ? h.result(outDir) : null;
+  h.check(`codex stderr: ${mode} preserves the bounded diagnostic and failure code`,
+    run.status === 7 && result?.status === "failed" && result.exitCode === 7 &&
+    JSON.stringify(result.stderrTail) === JSON.stringify(expectedTail));
+}
 }

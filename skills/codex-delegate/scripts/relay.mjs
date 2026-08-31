@@ -58,7 +58,8 @@
  *   status, exitCode, signal, codexVersion, threadId (for a later resume), finalMessage
  *   (Codex's own report), touchedFiles (git porcelain, null if git can't report), stderrTail on a
  *   run that did not succeed, and the paths to events.jsonl, final.txt and stderr.txt. stderr.txt
- *   holds the complete stderr stream; stderrTail is only its last 20 lines.
+ *   holds the complete stderr stream; stderrTail is up to 20 nonblank lines from its final
+ *   64 KiB, with a partial first line marked as truncated.
  *
  * Exit codes: a pre-run usage error (bad/missing args, empty brief) exits 2
  * before any run and writes no result file; a missing `codex` binary exits 127;
@@ -73,7 +74,7 @@
  */
 
 import {spawn, execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, appendFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, appendFileSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import {join, resolve, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { constants, tmpdir } from "node:os";
@@ -81,6 +82,7 @@ import { StringDecoder } from "node:string_decoder";
 
 const VERSION_PROBE_TIMEOUT_MS = 10_000;
 const MAX_TIMER_MS = 2_147_483_647;
+const MAX_STDERR_TAIL_BYTES = 64 * 1024;
 const SANDBOX_MODES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const SAFE_SESSION = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const SAFE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -462,20 +464,36 @@ function reportUnavailable(writeResult, resultPath) {
   process.exit(127);
 }
 
-// `codex exec` writes its whole transcript to stderr — the banner, every tool call, and the
-// full output of every command it runs — so on a failing run the line that explains the
-// failure is routinely hundreds of lines back and a bounded in-memory tail drops it. Persist
-// all of it beside the other run artifacts, the way claude-delegate already does, and let
-// result.json carry the tail as a summary that points at the complete file.
+// ponytail: bound the summary to the final 64 KiB; read stderrPath for longer diagnostics.
+// Reading the whole log here can exhaust memory before publishing a failure or forwarding an abort.
 function stderrTail(stderrPath) {
+  let fd;
   try {
-    return readFileSync(stderrPath, "utf8")
+    fd = openSync(stderrPath, "r");
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - MAX_STDERR_TAIL_BYTES);
+    const readStart = Math.max(0, start - 1);
+    const buffer = Buffer.alloc(size - readStart);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const count = readSync(fd, buffer, bytesRead, buffer.length - bytesRead, readStart + bytesRead);
+      if (count === 0) break;
+      bytesRead += count;
+    }
+    let offset = start - readStart;
+    // The preceding byte distinguishes a cut line from a line starting at the window boundary.
+    const partialLine = offset > 0 && buffer[0] !== 0x0a;
+    while (partialLine && offset < bytesRead && (buffer[offset] & 0xc0) === 0x80) offset += 1;
+    const lines = buffer.subarray(offset, bytesRead).toString("utf8")
       .split(/\r?\n/)
-      .map((line) => line.trimEnd())
-      .filter((line) => line.trim())
-      .slice(-20);
+      .map((line) => line.trimEnd());
+    if (partialLine && lines[0]?.trim()) lines[0] = `[truncated; read stderrPath] ${lines[0]}`;
+    return lines.filter((line) => line.trim()).slice(-20);
   } catch {
+    // A missing or unreadable diagnostic must not prevent the run result from being published.
     return [];
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
