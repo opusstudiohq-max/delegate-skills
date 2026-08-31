@@ -14,6 +14,18 @@ h.check("codex effort: forwarded as a config override",
   effortRun.status === 0 && effortArgs.includes("-c") && effortArgs[effortArgs.indexOf("-c") + 1] === "model_reasoning_effort=low");
 h.check("codex effort: recorded in result.json",
   existsSync(join(effortOutDir, "result.json")) && h.result(effortOutDir).effort === "low");
+// ---- codex --ignore-user-config isolates reviews from ambient MCP/user config ----
+const isolatedOutDir = join(h.scratch, "out-ignore-user-config-codex");
+const isolatedArgsFile = join(h.scratch, "args-ignore-user-config-codex");
+const isolatedRun = spawnSync(process.execPath, [
+  h.relayPath("codex"), "--brief", h.briefPath, "--cd", h.freshRepo("work-ignore-user-config-codex"),
+  "--out-dir", isolatedOutDir, "--read-only", "--ignore-user-config",
+], { env: { ...h.baseEnv, SMOKE_MODE: "capture", SMOKE_ARGS_FILE: isolatedArgsFile }, encoding: "utf8" });
+const isolatedArgs = existsSync(isolatedArgsFile) ? JSON.parse(readFileSync(isolatedArgsFile, "utf8")) : [];
+h.check("codex ignore-user-config: forwarded before exec options",
+  isolatedRun.status === 0 && isolatedArgs[0] === "exec" && isolatedArgs[1] === "--ignore-user-config");
+h.check("codex ignore-user-config: recorded in result.json",
+  existsSync(join(isolatedOutDir, "result.json")) && h.result(isolatedOutDir).ignoreUserConfig === true);
 // ---- codex --clean-env isolates both preflight and dispatch ----
 const cleanEnvHelp = spawnSync(process.execPath, [h.relayPath("codex"), "--help"], { encoding: "utf8" });
 h.check("codex clean-env: help scopes the flag to inherited variables, not same-user secrets",
